@@ -2,6 +2,7 @@ import numpy as np
 import tensorflow as tf
 import input_data
 import matplotlib.pyplot as plt
+from tensorflow.contrib.distributions import Normal
 
 np.random.seed(0)
 tf.set_random_seed(0)
@@ -65,7 +66,8 @@ class VariationalAutoencoder(object):
         self.z_mean, self.z_mean_c, self.z_log_sigma_sq, self.z_log_sigma_sq_c = \
             self._recognition_network(network_weights["weights_recog"],
                                       network_weights["biases_recog"],
-                                      self.network_architecture["n_z"])
+                                      self.network_architecture["n_z"],
+                                      self.x)
 
         self.z_mean_concat = tf.concat(1, [self.z_mean, self.z_mean_c])
         self.z_log_sigma_sq_concat = tf.concat(1, [self.z_log_sigma_sq, self.z_log_sigma_sq_c])
@@ -82,11 +84,33 @@ class VariationalAutoencoder(object):
         # Bernoulli distribution of reconstructed input
         self.x_reconstr_mean = \
             self._generator_network(network_weights["weights_gener"],
-                                    network_weights["biases_gener"])
+                                    network_weights["biases_gener"],
+                                    self.z)
+
+# ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+        # self.z_mean_static = self.z_mean.eval()
+        # self.z_log_sigma_sq_static = self.z_log_sigma_sq.eval()
+
+        self.z_prime_half = self.z[:, :int(n_z // 2)]
+
+        self.c_prime = tf.random_normal((self.batch_size, int(n_z // 2)), 0, 1,
+                                         dtype=tf.float32)
+
+        self.z_prime = tf.concat(1, [self.z_prime_half, self.c_prime])
+
+        self.x_prime = self._generator_network(network_weights["weights_gener"],
+                                               network_weights["biases_gener"],
+                                               self.z_prime)
+
+        _, self.z_mean_c_prime, __, self.z_log_sigma_sq_c_prime = \
+            self._recognition_network(network_weights["weights_recog"],
+                                      network_weights["biases_recog"],
+                                      self.network_architecture["n_z"],
+                                      self.x_prime)
 
     def _initialize_weights(self, n_hidden_recog_1, n_hidden_recog_2,
                             n_hidden_gener_1, n_hidden_gener_2,
-                            n_input, n_z):
+                            n_input, n_z, lmbda):
         all_weights = dict()
         all_weights['weights_recog'] = {
             'h1': tf.Variable(xavier_init(n_input, n_hidden_recog_1)),
@@ -110,11 +134,11 @@ class VariationalAutoencoder(object):
             'out_log_sigma': tf.Variable(tf.zeros([n_input], dtype=tf.float32))}
         return all_weights
 
-    def _recognition_network(self, weights, biases, n_z):
+    def _recognition_network(self, weights, biases, n_z, x):
         # Generate probabilistic encoder (recognition network), which
         # maps inputs onto a normal distribution in latent space.
         # The transformation is parametrized and can be learned.
-        layer_1 = self.transfer_fct(tf.add(tf.matmul(self.x, weights['h1']),
+        layer_1 = self.transfer_fct(tf.add(tf.matmul(x, weights['h1']),
                                            biases['b1']))
         layer_2 = self.transfer_fct(tf.add(tf.matmul(layer_1, weights['h2']),
                                            biases['b2']))
@@ -131,11 +155,11 @@ class VariationalAutoencoder(object):
 
         return (z_mean, z_mean_c, z_log_sigma_sq, z_log_sigma_sq_c)
 
-    def _generator_network(self, weights, biases):
+    def _generator_network(self, weights, biases, z):
         # Generate probabilistic decoder (decoder network), which
         # maps points in latent space onto a Bernoulli distribution in data space.
         # The transformation is parametrized and can be learned.
-        layer_1 = self.transfer_fct(tf.add(tf.matmul(self.z, weights['h1']),
+        layer_1 = self.transfer_fct(tf.add(tf.matmul(z, weights['h1']),
                                            biases['b1']))
         layer_2 = self.transfer_fct(tf.add(tf.matmul(layer_1, weights['h2']),
                                            biases['b2']))
@@ -152,8 +176,9 @@ class VariationalAutoencoder(object):
         #     for reconstructing the input when the activation in latent
         #     is given.
         # Adding 1e-10 to avoid evaluatio of log(0.0)
-        reconstr_loss = -tf.reduce_sum(self.x * tf.log(1e-10 + self.x_reconstr_mean) +
-                                       (1 - self.x) * tf.log(1e-10 + 1 - self.x_reconstr_mean), 1)
+        epsilon = 1e-10
+        reconstr_loss = -tf.reduce_sum(self.x * tf.log(epsilon + self.x_reconstr_mean) +
+                                       (1 - self.x) * tf.log(epsilon + 1 - self.x_reconstr_mean), 1)
 
         # 2.) The latent loss, which is defined as the Kullback Leibler divergence
         #     between the distribution in latent space induced by the encoder on
@@ -166,7 +191,16 @@ class VariationalAutoencoder(object):
                                            tf.square(self.z_mean_concat) -
                                            tf.exp(self.z_log_sigma_sq_concat), 1)
 
-        self.cost = tf.reduce_mean(reconstr_loss + latent_loss)   # average over batch
+        # 3.) Mutual information loss: log(q(c'|x'))
+        q_c_given_x = Normal(self.z_mean_c_prime, tf.exp(self.z_log_sigma_sq_c_prime))
+
+        prob_c_prime_given_x_prime = q_c_given_x.pdf(self.c_prime)
+        self.prob_c_prime_given_x_prime = prob_c_prime_given_x_prime
+        mi_loss = - tf.reduce_sum(tf.log(epsilon + prob_c_prime_given_x_prime), 1)
+
+        self.mi_loss = mi_loss
+        self.cost = tf.reduce_mean(reconstr_loss + latent_loss +
+                                   self.network_architecture['lmbda'] * mi_loss)   # average over batch
         # Use ADAM optimizer
         self.optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate).minimize(self.cost)
 
@@ -175,8 +209,9 @@ class VariationalAutoencoder(object):
 
         Return cost of mini-batch.
         """
-        opt, cost = self.sess.run((self.optimizer, self.cost),
-                                  feed_dict={self.x: X})
+        opt, cost, mi_loss, prob = self.sess.run((self.optimizer, self.cost, self.mi_loss,
+                                                  self.prob_c_prime_given_x_prime),
+                                                 feed_dict={self.x: X})
         return cost
 
     def transform(self, X):
@@ -221,6 +256,7 @@ def train(network_architecture, learning_rate=0.001,
 
             # Fit training using batch data
             cost = vae.partial_fit(batch_xs)
+            # print vae.mi_loss.eval()
             # Compute average loss
             avg_cost += cost / n_samples * batch_size
 
@@ -246,20 +282,54 @@ def print_reconstruction(x_reconstruct, x_sample):
     plt.tight_layout()
 
 
+def continuous_reconstruction(vae_2d):
+    nx = ny = 20
+    x_values = np.linspace(-3, 3, nx)
+    y_values = np.linspace(-3, 3, ny)
+
+    canvas = np.empty((28 * ny, 28 * nx))
+    for i, yi in enumerate(x_values):
+        for j, xi in enumerate(y_values):
+            z_mu = np.array([[xi, yi]]*100)
+            x_mean = vae_2d.generate(z_mu)
+            canvas[(nx - i - 1) * 28:(nx - i) * 28, j * 28:(j + 1) * 28] = x_mean[0].reshape(28, 28)
+
+    plt.figure(figsize=(8, 10))
+    Xi, Yi = np.meshgrid(x_values, y_values)
+    plt.imshow(canvas, origin="upper")
+    plt.tight_layout()
+
+def scatterplot_reconstruction(vae_2d):
+    x_sample, y_sample = mnist.test.next_batch(5000)
+    z_mu = vae_2d.transform(x_sample)
+    plt.figure(figsize=(8, 6))
+    plt.scatter(z_mu[:, 0], z_mu[:, 1], c=np.argmax(y_sample, 1))
+    plt.colorbar()
+
+
 def main():
     network_architecture = dict(n_hidden_recog_1=500,  # 1st layer encoder neurons
                                 n_hidden_recog_2=500,  # 2nd layer encoder neurons
                                 n_hidden_gener_1=500,  # 1st layer decoder neurons
                                 n_hidden_gener_2=500,  # 2nd layer decoder neurons
                                 n_input=784,  # MNIST data input (img shape: 28*28)
-                                n_z=20)   # dimensionality of latent space
+                                n_z=2,   # dimensionality of latent space
+                                lmbda=3)
 
-    vae = train(network_architecture, training_epochs=75)
+    vae = train(network_architecture, training_epochs=32)
 
     x_sample = mnist.test.next_batch(100)[0]
     x_reconstruct = vae.reconstruct(x_sample)
 
     print_reconstruction(x_reconstruct, x_sample)
+
+    continuous_reconstruction(vae)
+    scatterplot_reconstruction(vae)
+
+
+
+
+
 
 
 if __name__ == '__main__':
