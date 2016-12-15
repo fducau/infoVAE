@@ -2,6 +2,7 @@ import numpy as np
 import tensorflow as tf
 import input_data
 from tensorflow.contrib.distributions import Normal
+from distributions import Gaussian
 
 np.random.seed(0)
 tf.set_random_seed(0)
@@ -12,7 +13,7 @@ network_architecture = dict(n_hidden_recog_1=500,  # 1st layer encoder neurons
                             n_hidden_gener_2=500,  # 2nd layer decoder neurons
                             n_input=784,  # MNIST data input (img shape: 28*28)
                             n_z=20,       # dimensionality of latent space
-                            info=True)   
+                            info=False)
 
 # Load MNIST data in a format suited for tensorflow.
 # The script input_data is available under this URL:
@@ -40,7 +41,7 @@ class VariationalAutoencoder(object):
 
     See "Auto-Encoding Variational Bayes" by Kingma and Welling for more details.
     """
-    def __init__(self, network_architecture, transfer_fct=tf.nn.softplus, 
+    def __init__(self, network_architecture, transfer_fct=tf.nn.softplus,
                  learning_rate=0.001, batch_size=100):
         self.network_architecture = network_architecture
         self.transfer_fct = transfer_fct
@@ -79,7 +80,8 @@ class VariationalAutoencoder(object):
         # space
         self.z_mean, self.z_log_sigma_sq = \
             self._recognition_network(network_weights["weights_recog"],
-                                      network_weights["biases_recog"])
+                                      network_weights["biases_recog"],
+                                      self.x)
 
         # Draw one sample z from Gaussian distribution
         n_z = self.network_architecture["n_z"]
@@ -100,27 +102,24 @@ class VariationalAutoencoder(object):
         ####
         ####
         ####
-        for i in range(50):
-            eps = tf.random_normal((self.batch_size, n_z), 0, 1,
-                                   dtype=tf.float32)
+        eps = tf.random_normal((self.batch_size, n_z), 0, 1,
+                               dtype=tf.float32)
 
-            self.z_theta = tf.add(tf.zeros([self.batch_size, n_z], tf.float32),
-                                  tf.mul(tf.ones([self.batch_size, n_z], tf.float32), eps),
-                                  name='z_theta')
-            self.x_prime = self._generator_network(network_weights["weights_gener"],
-                                                   network_weights["biases_gener"],
-                                                   z=self.z_theta)
-            self.cross_entropy = 0
+        self.z_theta = tf.add(0.0, tf.mul(1.0, eps), name='z_theta')
 
-            self.z_prime, self.z_prime_log_sigma_sq = \
-                self._recognition_network(network_weights["weights_recog"],
-                                          network_weights["biases_recog"])
+        self.x_prime = self._generator_network(network_weights["weights_gener"],
+                                               network_weights["biases_gener"],
+                                               z=self.z_theta)
 
-            dist = Normal(mu=self.z_prime, sigma=tf.sqrt(tf.exp(self.z_prime_log_sigma_sq)))
+        self.z_prime, self.z_prime_log_sigma_sq = self._recognition_network(
+            network_weights["weights_recog"],
+            network_weights["biases_recog"],
+            self.x_prime)
 
-            self.cross_entropy += tf.reduce_mean(- dist.log_pdf(self.z_theta, name='x_entropy'))
+        dist = Normal(mu=self.z_prime, sigma=tf.sqrt(tf.exp(self.z_prime_log_sigma_sq)))
+        logli = tf.reduce_sum(dist.log_pdf(self.z_theta, name='x_entropy'), reduction_indices=1)
 
-        self.cross_entropy = tf.mul(self.cross_entropy, 1. / 50.)
+        self.cross_entropy = tf.reduce_mean(- logli)
 
         self.entropy = tf.constant(28.37)
 
@@ -150,11 +149,11 @@ class VariationalAutoencoder(object):
             'out_log_sigma': tf.Variable(tf.zeros([n_input], dtype=tf.float32))}
         return all_weights
 
-    def _recognition_network(self, weights, biases):
+    def _recognition_network(self, weights, biases, x):
         # Generate probabilistic encoder (recognition network), which
         # maps inputs onto a normal distribution in latent space.
         # The transformation is parametrized and can be learned.
-        layer_1 = self.transfer_fct(tf.add(tf.matmul(self.x, weights['h1']),
+        layer_1 = self.transfer_fct(tf.add(tf.matmul(x, weights['h1']),
                                            biases['b1']))
         layer_2 = self.transfer_fct(tf.add(tf.matmul(layer_1, weights['h2']),
                                            biases['b2']))
@@ -213,7 +212,9 @@ class VariationalAutoencoder(object):
             self.cost = tf.add(tf.reduce_mean(reconstr_loss + latent_loss),
                                - tf.mul(self.MI, self.lmbda))   # average over batch
         else:
-            self.cost = tf.reduce_mean(reconstr_loss + latent_loss)
+            #self.cost = tf.reduce_mean(reconstr_loss + latent_loss)
+            self.cost = tf.reduce_mean(reconstr_loss - 10. * self.MI)
+
 
         # Use ADAM optimizer
         self.optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate).minimize(self.cost)
@@ -221,12 +222,14 @@ class VariationalAutoencoder(object):
         rec_summary = tf.scalar_summary('reconstruction loss', tf.reduce_mean(reconstr_loss))
         latent_summary = tf.scalar_summary('KLD q(z|x) || p(z)', tf.reduce_mean(latent_loss))
         cost_summary = tf.scalar_summary('Cost', self.cost)
+        sigma_summary = tf.scalar_summary('Sigma', tf.reduce_mean(tf.sqrt(tf.exp(self.z_prime_log_sigma_sq))))
+        mu_summary = tf.scalar_summary('mu', tf.reduce_mean(self.z_prime))
 
-        #q_MI_summary = tf.scalar_summary('q_theta(z|x)', tf.reduce_mean(self.q_z_theta_given_x_prime))
+        # q_MI_summary = tf.scalar_summary('q_theta(z|x)', tf.reduce_mean(self.q_z_theta_given_x_prime))
         x_entropy_summary = tf.scalar_summary('H(z|x)', self.cross_entropy)
         MI_summary = tf.scalar_summary('MI', self.MI)
 
-        summaries = [rec_summary, latent_summary, cost_summary, x_entropy_summary, MI_summary]
+        summaries = [rec_summary, latent_summary, cost_summary, x_entropy_summary, MI_summary, sigma_summary, mu_summary]
         self.merged = tf.merge_summary(summaries)
 
     def partial_fit(self, X, last=False):
@@ -244,7 +247,7 @@ class VariationalAutoencoder(object):
 
         self.train_summary_writer.add_summary(summary, self.step)
         if last:
-            self.saver.save(sess, 'model')
+            self.saver.save(self.sess, 'model')
         self.step += 1
 
         return cost

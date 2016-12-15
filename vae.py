@@ -2,7 +2,8 @@ import numpy as np
 import tensorflow as tf
 import input_data
 import matplotlib.pyplot as plt
-from tensorflow.contrib.distributions import Normal
+from tensorflow.contrib.distributions import Normal, MultivariateNormalDiag
+
 
 np.random.seed(0)
 tf.set_random_seed(0)
@@ -28,7 +29,7 @@ class VariationalAutoencoder(object):
     """ Variation Autoencoder (VAE) with an sklearn-like interface implemented using TensorFlow.
 
     This implementation uses probabilistic encoders and decoders using Gaussian
-    distributions and  realized by multi-layer perceptrons. The VAE can be learned
+    distributions and  realized by multi-lay2er perceptrons. The VAE can be learned
     end-to-end.
 
     See "Auto-Encoding Variational Bayes" by Kingma and Welling for more details.
@@ -39,7 +40,10 @@ class VariationalAutoencoder(object):
         self.transfer_fct = transfer_fct
         self.learning_rate = learning_rate
         self.batch_size = batch_size
+        self.step = 0
+        self.summary_dir = './summary/'
 
+        self.sess = tf.InteractiveSession()
         # tf Graph input
         self.x = tf.placeholder(tf.float32, [None, network_architecture["n_input"]])
 
@@ -49,12 +53,12 @@ class VariationalAutoencoder(object):
         # corresponding optimizer
         self._create_loss_optimizer()
 
+        self.train_summary_writer = tf.train.SummaryWriter(self.summary_dir, self.sess.graph)
         # Initializing the tensor flow variables
         init = tf.initialize_all_variables()
-
         # Launch the session
-        self.sess = tf.InteractiveSession()
         self.sess.run(init)
+
 
     def _create_network(self):
         # Initialize autoencode network weights and biases
@@ -94,9 +98,10 @@ class VariationalAutoencoder(object):
         self.z_prime_half = self.z[:, :int(n_z // 2)]
 
         self.c_prime = tf.random_normal((self.batch_size, int(n_z // 2)), 0, 1,
-                                         dtype=tf.float32)
+                                        dtype=tf.float32,
+                                        name='c_prime')
 
-        self.z_prime = tf.concat(1, [self.z_prime_half, self.c_prime])
+        self.z_prime = tf.concat(1, [self.z_prime_half, self.c_prime], name='z_prime')
 
         self.x_prime = self._generator_network(network_weights["weights_gener"],
                                                network_weights["biases_gener"],
@@ -176,9 +181,12 @@ class VariationalAutoencoder(object):
         #     for reconstructing the input when the activation in latent
         #     is given.
         # Adding 1e-10 to avoid evaluatio of log(0.0)
-        epsilon = 1e-10
-        reconstr_loss = -tf.reduce_sum(self.x * tf.log(epsilon + self.x_reconstr_mean) +
-                                       (1 - self.x) * tf.log(epsilon + 1 - self.x_reconstr_mean), 1)
+        epsilon = tf.constant(1e-10)
+        reconstr_loss = \
+        	-tf.reduce_sum(self.x * tf.log(epsilon + self.x_reconstr_mean) +
+                                       (1 - self.x) * tf.log(epsilon + 1 - self.x_reconstr_mean), 1, 
+                                       name='reconstruction_loss')
+
 
         # 2.) The latent loss, which is defined as the Kullback Leibler divergence
         #     between the distribution in latent space induced by the encoder on
@@ -189,29 +197,52 @@ class VariationalAutoencoder(object):
 
         latent_loss = -0.5 * tf.reduce_sum(1 + self.z_log_sigma_sq_concat -
                                            tf.square(self.z_mean_concat) -
-                                           tf.exp(self.z_log_sigma_sq_concat), 1)
+                                           tf.exp(self.z_log_sigma_sq_concat), 1,
+                                           name='Latent_Loss')
 
         # 3.) Mutual information loss: log(q(c'|x'))
-        q_c_given_x = Normal(self.z_mean_c_prime, tf.exp(self.z_log_sigma_sq_c_prime))
+        q_c_given_x = MultivariateNormalDiag(self.z_mean_c_prime, tf.exp(self.z_log_sigma_sq_c_prime),
+                                             validate_args=True,
+                                             name='q_c_given_x')
 
-        prob_c_prime_given_x_prime = q_c_given_x.pdf(self.c_prime)
+        prob_c_prime_given_x_prime = q_c_given_x.pdf(self.c_prime, name='prob_c_prime_given_x_prime')
         self.prob_c_prime_given_x_prime = prob_c_prime_given_x_prime
-        mi_loss = - tf.reduce_sum(tf.log(epsilon + prob_c_prime_given_x_prime), 1)
+
+        mi_loss = - tf.log(tf.add(epsilon, prob_c_prime_given_x_prime), name='mi_loss')
+
+        #mi_loss = - tf.reduce_sum(tf.log(epsilon + prob_c_prime_given_x_prime), 1,
+        #                          name='mi_loss')
 
         self.mi_loss = mi_loss
-        self.cost = tf.reduce_mean(reconstr_loss + latent_loss +
-                                   self.network_architecture['lmbda'] * mi_loss)   # average over batch
+        #self.cost = tf.reduce_mean(reconstr_loss + latent_loss +
+        #                           self.network_architecture['lmbda'] * mi_loss, name='cost')   # average over batch
+        self.cost = tf.add(tf.reduce_mean(reconstr_loss + latent_loss), 
+                           tf.reduce_mean(mi_loss))
+
         # Use ADAM optimizer
         self.optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate).minimize(self.cost)
+
+        
+        rec_summary = tf.scalar_summary('reconstruction loss', tf.reduce_mean(reconstr_loss))
+        mi_summary = tf.scalar_summary('MI loss', tf.reduce_mean(mi_loss))
+        latent_summary = tf.scalar_summary('KLD q(z|x) || p(z)', tf.reduce_mean(latent_loss))
+        latent_pqgivenx = tf.scalar_summary('p(q_prime|x_prime)', tf.reduce_mean(prob_c_prime_given_x_prime))
+
+        summaries = [rec_summary, mi_summary, latent_summary, latent_pqgivenx]
+        self.merged = tf.merge_summary(summaries)
 
     def partial_fit(self, X):
         """Train model based on mini-batch of input data.
 
         Return cost of mini-batch.
         """
-        opt, cost, mi_loss, prob = self.sess.run((self.optimizer, self.cost, self.mi_loss,
-                                                  self.prob_c_prime_given_x_prime),
+        opt, cost, mi_loss, prob, summary = self.sess.run((self.optimizer, self.cost, self.mi_loss,
+                                                  self.prob_c_prime_given_x_prime, self.merged),
                                                  feed_dict={self.x: X})
+
+        self.train_summary_writer.add_summary(summary, self.step)
+        self.step += 1
+
         return cost
 
     def transform(self, X):
@@ -262,7 +293,7 @@ def train(network_architecture, learning_rate=0.001,
 
         # Display logs per epoch step
         if epoch % display_step == 0:
-            print "Epoch:", '%04d' % (epoch + 1), "cost=", "{:.9f}".format(avg_cost)
+            print('Epoch: {}, Cost: {:.9f}'.format(epoch + 1, avg_cost))
 
     return vae
 
@@ -318,19 +349,13 @@ def main():
 
     vae = train(network_architecture, training_epochs=32)
 
-    x_sample = mnist.test.next_batch(100)[0]
-    x_reconstruct = vae.reconstruct(x_sample)
+    #x_sample = mnist.test.next_batch(100)[0]
+    #x_reconstruct = vae.reconstruct(x_sample)
 
-    print_reconstruction(x_reconstruct, x_sample)
+    #print_reconstruction(x_reconstruct, x_sample)
 
-    continuous_reconstruction(vae)
-    scatterplot_reconstruction(vae)
-
-
-
-
-
-
+    #continuous_reconstruction(vae)
+    #scatterplot_reconstruction(vae)
 
 if __name__ == '__main__':
     main()
