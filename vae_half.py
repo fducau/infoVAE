@@ -3,6 +3,10 @@ import tensorflow as tf
 import input_data
 from tensorflow.contrib.distributions import Normal
 import copy
+from misc.datasets import BasicPropDataset, \
+                          BasicPropAngleDataset, \
+                          BasicPropAngleNoiseDataset, \
+                          BasicPropAngleNoiseBGDataset
 
 np.random.seed(0)
 tf.set_random_seed(0)
@@ -14,13 +18,6 @@ network_architecture = dict(n_hidden_recog_1=500,  # 1st layer encoder neurons
                             n_input=784,  # MNIST data input (img shape: 28*28)
                             n_z=20,       # dimensionality of latent space
                             info=False)
-
-# Load MNIST data in a format suited for tensorflow.
-# The script input_data is available under this URL:
-# https://raw.githubusercontent.com/tensorflow/tensorflow/master/tensorflow/g3doc/tutorials/mnist/input_data.py
-mnist = input_data.read_data_sets('MNIST_data', one_hot=True)
-n_samples = mnist.train.num_examples
-
 
 def xavier_init(fan_in, fan_out, constant=1):
     """ Xavier initialization of network weights"""
@@ -121,15 +118,32 @@ class VariationalAutoencoder(object):
                                       network_weights["biases_recog"],
                                       self.x_prime)
 
+        self.z_prime_mean_concat = tf.concat(1, [self.z_prime_mean, self.c_prime_mean])
+        self.z_prime_log_sigma_sq_concat = tf.concat(1, [self.z_prime_log_sigma_sq, self.c_prime_log_sigma_sq])
+
+        # Entropy for the code C
         dist = Normal(mu=self.c_prime_mean,
                       sigma=tf.sqrt(tf.exp(self.c_prime_log_sigma_sq)))
-
-        logli = tf.reduce_sum(dist.log_pdf(self.c_theta, name='x_entropy'),
+        logli = tf.reduce_sum(dist.log_pdf(self.c_theta, name='xc_entropy'),
                               reduction_indices=1)
-
         self.cross_entropy = tf.reduce_mean(- logli)
-        #self.cross_entropy = tf.reduce_mean(- dist.log_pdf(self.z_theta, name='x_entropy'))
         self.entropy = tf.constant(14.185)
+
+        # Entropy for the entire latent code
+        dist_all = Normal(mu=self.z_prime_mean_concat,
+                          sigma=tf.sqrt(tf.exp(self.z_prime_log_sigma_sq_concat)))
+        logli_all = tf.reduce_sum(dist_all.log_pdf(self.z_theta_concat, name='x_entropy_concat'),
+                                  reduction_indices=1)
+        self.cross_entropy_concat = tf.reduce_mean(- logli_all)
+        self.entropy_concat = tf.constant(28.37)
+
+        # Entropy for the code Z
+        dist_z = Normal(mu=self.z_prime_mean,
+                        sigma=tf.sqrt(tf.exp(self.z_prime_log_sigma_sq)))
+        logli_z = tf.reduce_sum(dist_z.log_pdf(self.z_theta, name='xz_entropy'),
+                                reduction_indices=1)
+        self.cross_entropy_z = tf.reduce_mean(- logli_z)
+        self.entropy_z = tf.constant(14.185)
 
     def _initialize_weights(self, n_hidden_recog_1, n_hidden_recog_2,
                             n_hidden_gener_1, n_hidden_gener_2,
@@ -229,8 +243,7 @@ class VariationalAutoencoder(object):
             self.cost = tf.reduce_mean(reconstr_loss + latent_loss - self.MI)
         else:
             self.cost = tf.reduce_mean(reconstr_loss + latent_loss)
-            #self.cost = tf.reduce_mean(reconstr_loss - 10. * self.MI)
-
+            # self.cost = tf.reduce_mean(reconstr_loss - 10. * self.MI)
 
         # Use ADAM optimizer
         self.optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate).minimize(self.cost)
@@ -238,14 +251,15 @@ class VariationalAutoencoder(object):
         rec_summary = tf.scalar_summary('reconstruction loss', tf.reduce_mean(reconstr_loss))
         latent_summary = tf.scalar_summary('KLD q(z|x) || p(z)', tf.reduce_mean(latent_loss))
         cost_summary = tf.scalar_summary('Cost', self.cost)
+
+        MI_summary = tf.scalar_summary('MI c', self.MI)
+        MI_summary_concat = tf.scalar_summary('MI_concat', tf.add(self.entropy_concat, - self.cross_entropy_concat, name='MI_losss_concat'))
+        MI_summary_z = tf.scalar_summary('MI_z', tf.add(self.entropy_z, - self.cross_entropy_z, name='MI_losss_z'))
+
         sigma_summary = tf.scalar_summary('Sigma', tf.reduce_mean(tf.sqrt(tf.exp(self.z_log_sigma_sq_concat))))
         mu_summary = tf.scalar_summary('mu', tf.reduce_mean(self.z_mean_concat))
 
-        # q_MI_summary = tf.scalar_summary('q_theta(z|x)', tf.reduce_mean(self.q_z_theta_given_x_prime))
-        x_entropy_summary = tf.scalar_summary('H(z|x)', self.cross_entropy)
-        MI_summary = tf.scalar_summary('MI', self.MI)
-
-        summaries = [rec_summary, latent_summary, cost_summary, x_entropy_summary, MI_summary, sigma_summary, mu_summary]
+        summaries = [rec_summary, latent_summary, cost_summary, MI_summary, MI_summary_z, MI_summary_concat, sigma_summary, mu_summary]
         self.merged = tf.merge_summary(summaries)
 
     def partial_fit(self, X, last=False):
@@ -296,7 +310,23 @@ class VariationalAutoencoder(object):
 
 def train(network_architecture, learning_rate=0.001,
           batch_size=100, training_epochs=10, display_step=5,
-          info=False):
+          info=False, dataset='MNIST'):
+
+    if dataset == 'MNIST':
+        dataset = input_data.read_data_sets('MNIST_data', one_hot=True)
+    elif dataset == 'BASICPROP':
+        dataset = BasicPropDataset()
+    elif dataset == 'BPAngle':
+        dataset = BasicPropAngleDataset()
+    elif dataset == 'BPAngleNoise':
+        dataset = BasicPropAngleNoiseDataset()
+    elif dataset == 'BPAngleNoiseBG':
+        dataset = BasicPropAngleNoiseBGDataset()
+    else:
+        raise Exception("Please specify a valid dataset.")
+
+    mnist = input_data.read_data_sets('MNIST_data', one_hot=True)
+    n_samples = mnist.train.num_examples
 
     network_arch = copy.deepcopy(network_architecture)
     network_arch['info'] = info
@@ -311,7 +341,7 @@ def train(network_architecture, learning_rate=0.001,
         total_batch = int(n_samples / batch_size)
         # Loop over all batches
         for i in range(total_batch):
-            batch_xs, _ = mnist.train.next_batch(batch_size)
+            batch_xs, _ = dataset.train.next_batch(batch_size)
 
             # Fit training using batch data
             if i == total_batch:
@@ -329,7 +359,7 @@ def train(network_architecture, learning_rate=0.001,
 
 
 def main():
-    vae = train(network_architecture, training_epochs=25)
+    vae = train(network_architecture, training_epochs=25, info=True)
 
 
 if __name__ == '__main__':
