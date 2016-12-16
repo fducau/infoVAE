@@ -3,10 +3,16 @@ import tensorflow as tf
 import input_data
 from tensorflow.contrib.distributions import Normal
 import copy
+import datetime
+import dateutil
+from misc.utils import mkdir_p
 from misc.datasets import BasicPropDataset, \
                           BasicPropAngleDataset, \
                           BasicPropAngleNoiseDataset, \
-                          BasicPropAngleNoiseBGDataset
+                          BasicPropAngleNoiseBGDataset,  \
+                          MnistDataset
+
+SAVE_MODEL_TO = './models'
 
 np.random.seed(0)
 tf.set_random_seed(0)
@@ -29,6 +35,24 @@ def xavier_init(fan_in, fan_out, constant=1):
                              dtype=tf.float32)
 
 
+def load_dataset(dataset_name='MNIST'):
+    if dataset_name == 'MNIST':
+        # dataset = input_data.read_data_sets('MNIST_data', one_hot=True)
+        dataset = MnistDataset()
+    elif dataset_name == 'BASICPROP':
+        dataset = BasicPropDataset()
+    elif dataset_name == 'BPAngle':
+        dataset = BasicPropAngleDataset()
+    elif dataset_name == 'BPAngleNoise':
+        dataset = BasicPropAngleNoiseDataset()
+    elif dataset_name == 'BPAngleNoiseBG':
+        dataset = BasicPropAngleNoiseBGDataset()
+    else:
+        raise Exception("Please specify a valid dataset.")
+
+    return dataset
+
+
 class VariationalAutoencoder(object):
     """ Variation Autoencoder (VAE) with an sklearn-like interface implemented using TensorFlow.
 
@@ -39,15 +63,23 @@ class VariationalAutoencoder(object):
     See "Auto-Encoding Variational Bayes" by Kingma and Welling for more details.
     """
     def __init__(self, network_architecture, transfer_fct=tf.nn.softplus,
-                 learning_rate=0.001, batch_size=100):
+                 learning_rate=0.001, batch_size=100,
+                 dataset_name='unkn'):
         self.network_architecture = network_architecture
         self.transfer_fct = transfer_fct
         self.learning_rate = learning_rate
         self.batch_size = batch_size
         self.step = 0
-        self.summary_dir = './summary/'
         self.info = network_architecture['info']
+        self.dataset_name = dataset_name
+        self.summary_dir = './summary/'
 
+        now = datetime.datetime.now(dateutil.tz.tzlocal())
+        timestamp = now.strftime('%H_%M_%S_%Y%m%d')
+        n_z = self.network_architecture["n_z"]
+        self.summary_dir = './summary/DS-{}_nz{}_info{}_{}'.format(self.dataset_name,
+                                                                   n_z, self.info,
+                                                                   timestamp)
         self.sess = tf.InteractiveSession()
 
         # tf Graph input
@@ -277,7 +309,17 @@ class VariationalAutoencoder(object):
 
         self.train_summary_writer.add_summary(summary, self.step)
         if last:
-            self.saver.save(self.sess, 'model')
+            now = datetime.datetime.now(dateutil.tz.tzlocal())
+            timestamp = now.strftime('%H_%M_%S_%Y%m%d')
+            n_z = self.network_architecture["n_z"]
+
+            savefolder = '{}/DS-{}_nz{}_info{}_{}'.format(SAVE_MODEL_TO,
+                                                          self.dataset_name,
+                                                          n_z, self.info,
+                                                          timestamp)
+            mkdir_p(savefolder)
+            self.saver.save(self.sess, '{}/model'.format(savefolder))
+
         self.step += 1
 
         return cost
@@ -312,28 +354,20 @@ def train(network_architecture, learning_rate=0.001,
           batch_size=100, training_epochs=10, display_step=5,
           info=False, dataset='MNIST'):
 
-    if dataset == 'MNIST':
-        dataset = input_data.read_data_sets('MNIST_data', one_hot=True)
-    elif dataset == 'BASICPROP':
-        dataset = BasicPropDataset()
-    elif dataset == 'BPAngle':
-        dataset = BasicPropAngleDataset()
-    elif dataset == 'BPAngleNoise':
-        dataset = BasicPropAngleNoiseDataset()
-    elif dataset == 'BPAngleNoiseBG':
-        dataset = BasicPropAngleNoiseBGDataset()
-    else:
-        raise Exception("Please specify a valid dataset.")
 
     mnist = input_data.read_data_sets('MNIST_data', one_hot=True)
     n_samples = mnist.train.num_examples
+
+    if isinstance(dataset, str):
+        dataset = load_dataset(dataset)
 
     network_arch = copy.deepcopy(network_architecture)
     network_arch['info'] = info
 
     vae = VariationalAutoencoder(network_arch,
                                  learning_rate=learning_rate,
-                                 batch_size=batch_size)
+                                 batch_size=batch_size,
+                                 dataset_name=dataset.dataset_name)
 
     # Training cycle
     for epoch in range(training_epochs):
@@ -342,10 +376,12 @@ def train(network_architecture, learning_rate=0.001,
         # Loop over all batches
         for i in range(total_batch):
             batch_xs, _ = dataset.train.next_batch(batch_size)
+            if dataset.dataset_name == "BASICPROP-angle":
+                batch_xs = np.ceil(batch_xs)
 
             # Fit training using batch data
-            if i == total_batch:
-                cost = vae.partial_fit(batch_xs, last=True)
+            if epoch == training_epochs - 1 and i == total_batch - 1:
+                    cost = vae.partial_fit(batch_xs, last=True)
             else:
                 cost = vae.partial_fit(batch_xs)
             # Compute average loss

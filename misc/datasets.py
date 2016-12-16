@@ -57,6 +57,7 @@ class Dataset(object):
 class BasicPropDataset(object):
     def __init__(self):
         data_directory = "BASICPROP"
+        self.dataset_name = data_directory
         if not os.path.exists(data_directory):
             os.makedirs(data_directory)
         dataset = mnist.input_data.read_data_sets(data_directory)
@@ -91,6 +92,7 @@ class BasicPropDataset(object):
 class BasicPropAngleDataset(object):
     def __init__(self):
         data_directory = "BASICPROP-angle"
+        self.dataset_name = data_directory
         if not os.path.exists(data_directory):
             os.makedirs(data_directory)
         dataset = mnist.input_data.read_data_sets(data_directory)
@@ -125,6 +127,7 @@ class BasicPropAngleDataset(object):
 class BasicPropAngleNoiseDataset(object):
     def __init__(self):
         data_directory = "BASICPROP-angle-noise"
+        self.dataset_name = data_directory
         if not os.path.exists(data_directory):
             os.makedirs(data_directory)
         dataset = mnist.input_data.read_data_sets(data_directory)
@@ -159,6 +162,7 @@ class BasicPropAngleNoiseDataset(object):
 class BasicPropAngleNoiseBGDataset(object):
     def __init__(self):
         data_directory = "BASICPROP-angle-noise-bg"
+        self.dataset_name = data_directory
         if not os.path.exists(data_directory):
             os.makedirs(data_directory)
         dataset = mnist.input_data.read_data_sets(data_directory)
@@ -193,6 +197,7 @@ class BasicPropAngleNoiseBGDataset(object):
 class MnistDataset(object):
     def __init__(self):
         data_directory = "MNIST"
+        self.dataset_name = data_directory
         if not os.path.exists(data_directory):
             os.makedirs(data_directory)
         dataset = mnist.input_data.read_data_sets(data_directory)
