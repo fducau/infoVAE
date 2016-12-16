@@ -25,6 +25,8 @@ network_architecture = dict(n_hidden_recog_1=500,  # 1st layer encoder neurons
                             n_z=20,       # dimensionality of latent space
                             info=False)
 
+
+
 def xavier_init(fan_in, fan_out, constant=1):
     """ Xavier initialization of network weights"""
     # https://stackoverflow.com/questions/33640581/how-to-do-xavier-initialization-on-tensorflow
@@ -64,7 +66,8 @@ class VariationalAutoencoder(object):
     """
     def __init__(self, network_architecture, transfer_fct=tf.nn.softplus,
                  learning_rate=0.001, batch_size=100,
-                 dataset_name='unkn'):
+                 dataset_name='unkn', recover=''):
+
         self.network_architecture = network_architecture
         self.transfer_fct = transfer_fct
         self.learning_rate = learning_rate
@@ -91,8 +94,14 @@ class VariationalAutoencoder(object):
         # corresponding optimizer
         self._create_loss_optimizer()
 
+        if recover:
+            self.saver = tf.train.import_meta_graph('{}.meta'.format(recover))
+            self.saver.restore(self.sess, recover)
+
+        else:
+            self.saver = tf.train.Saver(tf.all_variables())
+
         self.train_summary_writer = tf.train.SummaryWriter(self.summary_dir, self.sess.graph)
-        self.saver = tf.train.Saver(tf.all_variables())
 
         # Initializing the tensor flow variables
         init = tf.initialize_all_variables()
