@@ -14,15 +14,19 @@ from vae_half import *
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--latent_dim', default=20,
+parser.add_argument('--epochs', default=25,
+                    help='Number of epochs',
+                    type=int)
+parser.add_argument('--latent_z', default=10,
                     help='Latent code dimension',
                     type=int)
-parser.add_argument('--epochs', default=25, 
-                    help='Number of epochs',
+parser.add_argument('--latent_c', default=10,
+                    help='Latent code dimension',
                     type=int)
 
 args = parser.parse_args()
-latent_dim = args.latent_dim
+latent_z = args.latent_z
+latent_c = args.latent_c
 n_epochs = args.epochs
 
 DATASETS = ['MNIST', 'BASICPROP', 'BPAngle', 'BPAngleNoise', 'BPAngleNoiseBG']
@@ -64,18 +68,22 @@ def plot_reconstruction(network_architecture, info=False, dataset='MNIST', x_sam
     now = datetime.datetime.now(dateutil.tz.tzlocal())
     timestamp = now.strftime('%H_%M_%S_%Y%m%d')
 
-    savepath = '{}/REC_DS-{}_nz{}_info{}_{}'.format(SAVEPLOTS,
-                                                    dataset.dataset_name,
-                                                    network_architecture['n_z'],
-                                                    info, timestamp)
+    savepath = '{}/REC_DS-{}_nz{}_nc{}_info{}_{}'.format(SAVEPLOTS,
+                                                         dataset.dataset_name,
+                                                         network_architecture['n_z'],
+                                                         network_architecture['n_c'],
+                                                         info, timestamp)
     plt.savefig(savepath)
 
 
 def plots_2D(network_architecture, info=False, dataset='MNIST', x_sample=None):
     # Validate number of dimensions
-    if network_architecture['n_z'] > 2:
+    if network_architecture['n_z'] > 1:
         network_architecture = copy.deepcopy(network_architecture)
         network_architecture['n_z'] = 2
+    if network_architecture['n_c'] > 1:
+        network_architecture = copy.deepcopy(network_architecture)
+        network_architecture['n_c'] = 2
 
     # Validate dataset
     if isinstance(dataset, str):
@@ -103,10 +111,11 @@ def plots_2D(network_architecture, info=False, dataset='MNIST', x_sample=None):
     now = datetime.datetime.now(dateutil.tz.tzlocal())
     timestamp = now.strftime('%H_%M_%S_%Y%m%d')
 
-    savepath = '{}/LAT_DS-{}_nz{}_info{}_{}'.format(SAVEPLOTS,
-                                                    dataset.dataset_name,
-                                                    network_architecture['n_z'],
-                                                    info, timestamp)
+    savepath = '{}/LAT_DS-{}_nz{}_nc{}_info{}_{}'.format(SAVEPLOTS,
+                                                         dataset.dataset_name,
+                                                         network_architecture['n_z'],
+                                                         network_architecture['n_c'],
+                                                         info, timestamp)
     plt.savefig(savepath)
 
     # 2D reconstructions
@@ -133,9 +142,10 @@ def plots_2D(network_architecture, info=False, dataset='MNIST', x_sample=None):
     now = datetime.datetime.now(dateutil.tz.tzlocal())
     timestamp = now.strftime('%H_%M_%S_%Y%m%d')
 
-    savepath = '{}/LAT_REC_nz{}_info{}_{}'.format(SAVEPLOTS,
-                                                  network_architecture['n_z'],
-                                                  info, timestamp)
+    savepath = '{}/LAT_REC_nz{}_nc{}_info{}_{}'.format(SAVEPLOTS,
+                                                       network_architecture['n_z'],
+                                                       network_architecture['n_c'],
+                                                       info, timestamp)
     plt.savefig(savepath)
 
 def main():
@@ -145,7 +155,8 @@ def main():
                                 n_hidden_gener_1=500,  # 1st layer decoder neurons
                                 n_hidden_gener_2=500,  # 2nd layer decoder neurons
                                 n_input=784,  # MNIST data input (img shape: 28*28)
-                                n_z=latent_dim,       # dimensionality of latent space
+                                n_z=latent_z,       # dimensionality of latent space
+                                n_c=latent_c,
                                 info=False)
 
     for dataset_name in DATASETS:
@@ -169,4 +180,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

@@ -22,8 +22,9 @@ network_architecture = dict(n_hidden_recog_1=500,  # 1st layer encoder neurons
                             n_hidden_gener_1=500,  # 1st layer decoder neurons
                             n_hidden_gener_2=500,  # 2nd layer decoder neurons
                             n_input=784,  # MNIST data input (img shape: 28*28)
-                            n_z=20,       # dimensionality of latent space
-                            info=False)
+                            n_z=10,       # dimensionality of latent space no MI
+                            n_c=10,        # dimensionality of latent space with MI
+                            info=True)
 
 
 
@@ -66,7 +67,7 @@ class VariationalAutoencoder(object):
     """
     def __init__(self, network_architecture, transfer_fct=tf.nn.softplus,
                  learning_rate=0.001, batch_size=100,
-                 dataset_name='unkn', recover=''):
+                 dataset_name='unkn'):
 
         self.network_architecture = network_architecture
         self.transfer_fct = transfer_fct
@@ -80,9 +81,10 @@ class VariationalAutoencoder(object):
         now = datetime.datetime.now(dateutil.tz.tzlocal())
         timestamp = now.strftime('%H_%M_%S_%Y%m%d')
         n_z = self.network_architecture["n_z"]
-        self.summary_dir = './summary/DS-{}_nz{}_info{}_{}'.format(self.dataset_name,
-                                                                   n_z, self.info,
-                                                                   timestamp)
+        n_c = self.network_architecture["n_z"]
+        self.summary_dir = './summary/DS-{}_nz{}_nc{}_info{}_{}'.format(self.dataset_name,
+                                                                        n_z, n_c self.info,
+                                                                        timestamp)
         self.sess = tf.InteractiveSession()
 
         # tf Graph input
@@ -93,13 +95,6 @@ class VariationalAutoencoder(object):
         # Define loss function based variational upper-bound and
         # corresponding optimizer
         self._create_loss_optimizer()
-
-        if recover:
-            self.saver = tf.train.import_meta_graph('{}.meta'.format(recover))
-            self.saver.restore(self.sess, recover)
-
-        else:
-            self.saver = tf.train.Saver(tf.all_variables())
 
         self.train_summary_writer = tf.train.SummaryWriter(self.summary_dir, self.sess.graph)
 
@@ -124,10 +119,20 @@ class VariationalAutoencoder(object):
         self.z_mean_concat = tf.concat(1, [self.z_mean, self.c_mean])
         self.z_log_sigma_sq_concat = tf.concat(1, [self.z_log_sigma_sq, self.c_log_sigma_sq])
 
+
+        # Compute I(Z,X) point estimate as H(Z|X)
+
+        self.cond_ent_lat_given_x = tf.reduce_mean(tf.reduce_sum(tf.mul(tf.constant(0.5), tf.add(self.z_log_sigma_sq_concat, tf.constant(2.838))), reduction_indices=1))
+        self.cond_ent_z_given_x = tf.reduce_mean(tf.reduce_sum(tf.mul(tf.constant(0.5), tf.add(self.z_log_sigma_sq, tf.constant(2.838))), reduction_indices=1))
+        self.cond_ent_c_given_x = tf.reduce_mean(tf.reduce_sum(tf.mul(tf.constant(0.5), tf.add(self.c_log_sigma_sq, tf.constant(2.838))), reduction_indices=1))
+
         # Draw one sample z from Gaussian distribution
         n_z = self.network_architecture["n_z"]
-        eps = tf.random_normal((self.batch_size, n_z), 0, 1,
+        n_c = self.network_architecture["n_c"]
+
+        eps = tf.random_normal((self.batch_size, n_z + n_c), 0, 1,
                                dtype=tf.float32)
+
         # z = mu + sigma*epsilon
         self.z = tf.add(self.z_mean_concat,
                         tf.mul(tf.sqrt(tf.exp(self.z_log_sigma_sq_concat)), eps),
@@ -143,12 +148,12 @@ class VariationalAutoencoder(object):
         ####
         ####
         ####
-        eps = tf.random_normal((self.batch_size, n_z), 0, 1,
+        eps = tf.random_normal((self.batch_size, n_z + n_c), 0, 1,
                                dtype=tf.float32)
 
         self.z_theta_concat = tf.add(0.0, tf.mul(1.0, eps), name='z_theta')
-        self.z_theta = self.z_theta_concat[:, :int(n_z // 2)]
-        self.c_theta = self.z_theta_concat[:, int(n_z // 2):]
+        self.z_theta = self.z_theta_concat[:, :n_z]
+        self.c_theta = self.z_theta_concat[:, n_z:]
 
         self.x_prime = self._generator_network(network_weights["weights_gener"],
                                                network_weights["biases_gener"],
@@ -162,21 +167,21 @@ class VariationalAutoencoder(object):
         self.z_prime_mean_concat = tf.concat(1, [self.z_prime_mean, self.c_prime_mean])
         self.z_prime_log_sigma_sq_concat = tf.concat(1, [self.z_prime_log_sigma_sq, self.c_prime_log_sigma_sq])
 
-        # Entropy for the code C
+        # XEntropy for the code C
         dist = Normal(mu=self.c_prime_mean,
                       sigma=tf.sqrt(tf.exp(self.c_prime_log_sigma_sq)))
         logli = tf.reduce_sum(dist.log_pdf(self.c_theta, name='xc_entropy'),
                               reduction_indices=1)
         self.cross_entropy = tf.reduce_mean(- logli)
-        self.entropy = tf.constant(14.185)
+        self.entropy = tf.constant(1.4185 * n_c)
 
-        # Entropy for the entire latent code
+        # XEntropy for the entire latent code
         dist_all = Normal(mu=self.z_prime_mean_concat,
                           sigma=tf.sqrt(tf.exp(self.z_prime_log_sigma_sq_concat)))
         logli_all = tf.reduce_sum(dist_all.log_pdf(self.z_theta_concat, name='x_entropy_concat'),
                                   reduction_indices=1)
         self.cross_entropy_concat = tf.reduce_mean(- logli_all)
-        self.entropy_concat = tf.constant(28.37)
+        self.entropy_concat = tf.constant(1.4185 * (n_z + n_c))
 
         # Entropy for the code Z
         dist_z = Normal(mu=self.z_prime_mean,
@@ -184,24 +189,25 @@ class VariationalAutoencoder(object):
         logli_z = tf.reduce_sum(dist_z.log_pdf(self.z_theta, name='xz_entropy'),
                                 reduction_indices=1)
         self.cross_entropy_z = tf.reduce_mean(- logli_z)
-        self.entropy_z = tf.constant(14.185)
+        self.entropy_z = tf.constant(1.4185 * n_z)
 
     def _initialize_weights(self, n_hidden_recog_1, n_hidden_recog_2,
                             n_hidden_gener_1, n_hidden_gener_2,
-                            n_input, n_z, info):
+                            n_input, n_z, n_c, info):
+        n_lat = n_z + n_c
         all_weights = dict()
         all_weights['weights_recog'] = {
             'h1': tf.Variable(xavier_init(n_input, n_hidden_recog_1)),
             'h2': tf.Variable(xavier_init(n_hidden_recog_1, n_hidden_recog_2)),
-            'out_mean': tf.Variable(xavier_init(n_hidden_recog_2, n_z)),
-            'out_log_sigma': tf.Variable(xavier_init(n_hidden_recog_2, n_z))}
+            'out_mean': tf.Variable(xavier_init(n_hidden_recog_2, n_lat)),
+            'out_log_sigma': tf.Variable(xavier_init(n_hidden_recog_2, n_lat))}
         all_weights['biases_recog'] = {
             'b1': tf.Variable(tf.zeros([n_hidden_recog_1], dtype=tf.float32)),
             'b2': tf.Variable(tf.zeros([n_hidden_recog_2], dtype=tf.float32)),
-            'out_mean': tf.Variable(tf.zeros([n_z], dtype=tf.float32)),
-            'out_log_sigma': tf.Variable(tf.zeros([n_z], dtype=tf.float32))}
+            'out_mean': tf.Variable(tf.zeros([n_lat], dtype=tf.float32)),
+            'out_log_sigma': tf.Variable(tf.zeros([n_lat], dtype=tf.float32))}
         all_weights['weights_gener'] = {
-            'h1': tf.Variable(xavier_init(n_z, n_hidden_gener_1)),
+            'h1': tf.Variable(xavier_init(n_lat, n_hidden_gener_1)),
             'h2': tf.Variable(xavier_init(n_hidden_gener_1, n_hidden_gener_2)),
             'out_mean': tf.Variable(xavier_init(n_hidden_gener_2, n_input)),
             'out_log_sigma': tf.Variable(xavier_init(n_hidden_gener_2, n_input))}
@@ -229,11 +235,11 @@ class VariationalAutoencoder(object):
             tf.add(tf.matmul(layer_2, weights['out_log_sigma']),
                    biases['out_log_sigma'])
 
-        z_mean = z_mean_concat[:, :int(n_z // 2)]
-        c_mean = z_mean_concat[:, int(n_z // 2):]
+        z_mean = z_mean_concat[:, :n_z]
+        c_mean = z_mean_concat[:, n_z:]
 
-        z_log_sigma_sq = z_log_sigma_sq_concat[:, :int(n_z // 2)]
-        c_log_sigma_sq = z_log_sigma_sq_concat[:, int(n_z // 2):]
+        z_log_sigma_sq = z_log_sigma_sq_concat[:, :n_z]
+        c_log_sigma_sq = z_log_sigma_sq_concat[:, n_z:]
 
         return (z_mean, c_mean, z_log_sigma_sq, c_log_sigma_sq)
 
@@ -297,10 +303,17 @@ class VariationalAutoencoder(object):
         MI_summary_concat = tf.scalar_summary('MI_concat', tf.add(self.entropy_concat, - self.cross_entropy_concat, name='MI_losss_concat'))
         MI_summary_z = tf.scalar_summary('MI_z', tf.add(self.entropy_z, - self.cross_entropy_z, name='MI_losss_z'))
 
+        MI_lat_input = tf.scalar_summary('MI_INPUT_LAT', tf.add(self.entropy_concat, - self.cond_ent_lat_given_x))
+        MI_z_input = tf.scalar_summary('MI_INPUT_Z', tf.add(self.entropy_z, - self.cond_ent_z_given_x))
+        MI_c_input = tf.scalar_summary('MI_INPUT_C', tf.add(self.entropy, - self.cond_ent_c_given_x))
+
         sigma_summary = tf.scalar_summary('Sigma', tf.reduce_mean(tf.sqrt(tf.exp(self.z_log_sigma_sq_concat))))
         mu_summary = tf.scalar_summary('mu', tf.reduce_mean(self.z_mean_concat))
 
-        summaries = [rec_summary, latent_summary, cost_summary, MI_summary, MI_summary_z, MI_summary_concat, sigma_summary, mu_summary]
+        summaries = [rec_summary, latent_summary, cost_summary, MI_summary, MI_summary_z,
+                     MI_summary_concat, sigma_summary, mu_summary, MI_lat_input,
+                     MI_z_input, MI_c_input]
+
         self.merged = tf.merge_summary(summaries)
 
     def partial_fit(self, X, last=False):
@@ -320,12 +333,14 @@ class VariationalAutoencoder(object):
         if last:
             now = datetime.datetime.now(dateutil.tz.tzlocal())
             timestamp = now.strftime('%H_%M_%S_%Y%m%d')
-            n_z = self.network_architecture["n_z"]
+            n_z = self.network_architecture['n_z']
+            n_c = self.network_architecture['n_c']
 
-            savefolder = '{}/DS-{}_nz{}_info{}_{}'.format(SAVE_MODEL_TO,
-                                                          self.dataset_name,
-                                                          n_z, self.info,
-                                                          timestamp)
+            savefolder = '{}/DS-{}_nz{}_nc{}_info{}_{}'.format(SAVE_MODEL_TO,
+                                                               self.dataset_name,
+                                                               n_z, n_c,
+                                                               self.info,
+                                                               timestamp)
             mkdir_p(savefolder)
             self.saver.save(self.sess, '{}/model'.format(savefolder))
 
@@ -347,7 +362,7 @@ class VariationalAutoencoder(object):
         space.
         """
         if z_mu is None:
-            z_mu = np.random.normal(size=self.network_architecture["n_z"])
+            z_mu = np.random.normal(size=self.network_architecture['n_z'] + self.network_architecture['n_c'])
         # Note: This maps to mean of distribution, we could alternatively
         # sample from Gaussian distribution
         return self.sess.run(self.x_reconstr_mean,
@@ -361,7 +376,7 @@ class VariationalAutoencoder(object):
 
 def train(network_architecture, learning_rate=0.001,
           batch_size=100, training_epochs=10, display_step=5,
-          info=False, dataset='MNIST'):
+          info=False, dataset='MNIST', n_z=None, n_c=None):
 
 
     mnist = input_data.read_data_sets('MNIST_data', one_hot=True)
