@@ -17,7 +17,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--latent_dim', default=20,
                     help='Latent code dimension',
                     type=int)
-parser.add_argument('--epochs', default=50, 
+parser.add_argument('--epochs', default=25, 
                     help='Number of epochs',
                     type=int)
 
@@ -103,9 +103,10 @@ def plots_2D(network_architecture, info=False, dataset='MNIST', x_sample=None):
     now = datetime.datetime.now(dateutil.tz.tzlocal())
     timestamp = now.strftime('%H_%M_%S_%Y%m%d')
 
-    savepath = '{}/LAT_nz{}_info{}_{}'.format(SAVEPLOTS,
-                                              network_architecture['n_z'],
-                                              info, timestamp)
+    savepath = '{}/LAT_DS-{}_nz{}_info{}_{}'.format(SAVEPLOTS,
+                                                    dataset.dataset_name,
+                                                    network_architecture['n_z'],
+                                                    info, timestamp)
     plt.savefig(savepath)
 
     # 2D reconstructions
