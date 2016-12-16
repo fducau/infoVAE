@@ -1,5 +1,6 @@
 #Data Folder
 MNIST_data
+summary
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
