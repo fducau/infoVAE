@@ -228,6 +228,38 @@ class MnistDataset(object):
     def inverse_transform(self, data):
         return data
 
+class CarsDataset(object):
+    def __init__(self):
+        data_directory = "CARS"
+        self.dataset_name = data_directory
+        if not os.path.exists(data_directory):
+            os.makedirs(data_directory)
+        dataset = mnist.input_data.read_data_sets(data_directory)
+        self.train = dataset.train
+        # make sure that each type of digits have exactly 10 samples
+        sup_images = []
+        sup_labels = []
+        rnd_state = np.random.get_state()
+        np.random.seed(0)
+        for cat in range(10):
+            ids = np.where(self.train.labels == cat)[0]
+            np.random.shuffle(ids)
+            sup_images.extend(self.train.images[ids[:10]])
+            sup_labels.extend(self.train.labels[ids[:10]])
+        np.random.set_state(rnd_state)
+        self.supervised_train = Dataset(
+            np.asarray(sup_images),
+            np.asarray(sup_labels),
+        )
+        self.image_dim = 128 * 128
+        self.image_shape = (128, 1, 1)
+
+    def transform(self, data):
+        return data
+
+    def inverse_transform(self, data):
+        return data
+
 
 def try_data():
     mnist = MnistDataset()
