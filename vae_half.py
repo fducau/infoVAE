@@ -83,7 +83,7 @@ class VariationalAutoencoder(object):
         n_z = self.network_architecture["n_z"]
         n_c = self.network_architecture["n_z"]
         self.summary_dir = './summary/DS-{}_nz{}_nc{}_info{}_{}'.format(self.dataset_name,
-                                                                        n_z, n_c self.info,
+                                                                        n_z, n_c, self.info,
                                                                         timestamp)
         self.sess = tf.InteractiveSession()
 
@@ -97,7 +97,7 @@ class VariationalAutoencoder(object):
         self._create_loss_optimizer()
 
         self.train_summary_writer = tf.train.SummaryWriter(self.summary_dir, self.sess.graph)
-
+        self.saver = tf.train.Saver(tf.all_variables())
         # Initializing the tensor flow variables
         init = tf.initialize_all_variables()
 
@@ -282,6 +282,16 @@ class VariationalAutoencoder(object):
                                            tf.exp(self.z_log_sigma_sq_concat), 1,
                                            name='latent_loss')
 
+        latent_loss_z = -0.5 * tf.reduce_sum(1 + self.z_log_sigma_sq -
+                                           tf.square(self.z_mean) -
+                                           tf.exp(self.z_log_sigma_sq), 1,
+                                           name='latent_loss_z')
+
+        latent_loss_c = -0.5 * tf.reduce_sum(1 + self.c_log_sigma_sq -
+                                           tf.square(self.c_mean) -
+                                           tf.exp(self.c_log_sigma_sq), 1,
+                                           name='latent_loss_c')
+
         # 3.) Mutual Information loss
         self.lmbda = tf.constant(1.0)
         self.MI = tf.add(self.entropy, - self.cross_entropy, name='MI_loss')
@@ -296,7 +306,11 @@ class VariationalAutoencoder(object):
         self.optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate).minimize(self.cost)
 
         rec_summary = tf.scalar_summary('reconstruction loss', tf.reduce_mean(reconstr_loss))
-        latent_summary = tf.scalar_summary('KLD q(z|x) || p(z)', tf.reduce_mean(latent_loss))
+
+        latent_summary = tf.scalar_summary('KLD q(z_concat|x) || p(z)', tf.reduce_mean(latent_loss))
+        latent_summary_z = tf.scalar_summary('KLD q(z|x) || p(z)', tf.reduce_mean(latent_loss_z))
+        latent_summary_c = tf.scalar_summary('KLD q(c|x) || p(z)', tf.reduce_mean(latent_loss_c))
+
         cost_summary = tf.scalar_summary('Cost', self.cost)
 
         MI_summary = tf.scalar_summary('MI c', self.MI)
@@ -312,7 +326,8 @@ class VariationalAutoencoder(object):
 
         summaries = [rec_summary, latent_summary, cost_summary, MI_summary, MI_summary_z,
                      MI_summary_concat, sigma_summary, mu_summary, MI_lat_input,
-                     MI_z_input, MI_c_input]
+                     MI_z_input, MI_c_input,
+                     latent_summary_z, latent_summary_c]
 
         self.merged = tf.merge_summary(summaries)
 
@@ -347,6 +362,14 @@ class VariationalAutoencoder(object):
         self.step += 1
 
         return cost
+
+    def test_cost(self, X):
+        cost, mi_loss = self.sess.run((self.cost, self.MI), feed_dict={self.x: X})
+        info = self.network_architecture['info']
+        if info:
+            return cost + mi_loss
+        else:
+            return cost
 
     def transform(self, X):
         """Transform data by mapping it into the latent space."""
@@ -416,6 +439,35 @@ def train(network_architecture, learning_rate=0.001,
             print "Epoch:", '%04d' % (epoch + 1), "cost=", "{:.9f}".format(avg_cost)
 
     return vae
+
+
+def evaluate(vae, dataset='MNIST'):
+
+    batch_size = 100
+    mnist = input_data.read_data_sets('MNIST_data', one_hot=True)
+    n_samples = mnist.test.num_examples
+
+    if isinstance(dataset, str):
+        dataset = load_dataset(dataset)
+
+    network_architecture = vae.network_architecture
+
+    avg_cost = 0.
+    total_batch = int(n_samples / batch_size)
+    # Loop over all batches
+    for i in range(total_batch):
+        batch_xs, _ = dataset.test.next_batch(batch_size)
+        cost = vae.test_cost(batch_xs)
+        # Compute average loss
+        avg_cost += cost / n_samples * batch_size
+
+
+    return avg_cost
+
+
+
+
+
 
 
 def main():
