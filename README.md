@@ -1,5 +1,9 @@
 # infoVAE: Mutual Information in Variational Autoencoders
 
+Felipe N. Ducau - fnd212@nyu.edu
+
+Sony Trénous - jgt275@nyu.edu
+
 ## Abstract
 
 Motivated by the work of Chen et al. [1], we analyze the role of mutual information
