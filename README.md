@@ -12,7 +12,7 @@ plicitly enforced as part of its loss function. Furthermore, we make an attempt 
 formalize the role of MI in the VAE objective. We give an interpretation of a lower
 bound to the MI as the reconstruction error of a dual VAE.
 
-* [Technical report](/Mutual Information in Variational Autoencoders.pdf)
+* [Technical report](/Mutual%20Information%20in%20Variational%20Autoencoders.pdf)
 * [Poster](/Poster.pdf)
 
 [1] Xi Chen et al. “InfoGAN: Interpretable Representation Learning by Information Maximizing
